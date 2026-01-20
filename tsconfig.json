@@ -1,11 +1,17 @@
 {
     "compilerOptions": {
+        "target": "ES2021",
+        "module": "system",
         "outFile": "app.js",
         "sourceMap": true,
-        "target": "esnext",
+        "moduleResolution": "node",
+        "lib": ["DOM", "DOM.Iterable", "ES2021"],
+        "skipLibCheck": true,
+        "noEmitOnError": false
     },
-	"compileOnSave": true,
+    "compileOnSave": true,
     "include": [
-        "**/*.ts"
+        "app.ts",
+        "src/**/*.ts"
     ]
 }

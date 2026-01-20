@@ -13,13 +13,10 @@ Features
 
 # Local setup and development
 
-You need to have [TypeScript](https://www.typescriptlang.org/) installed.
-In the project root, run `tsc`.
-This should run without errors and create the file `app.js`.
+Prereqs: Node.js 18+ and npm.
 
-You need a webserver that locally serves the files from the project directory.
-If you have python installed, you can call `python3 -m http.server`.
-It will tell you the port, for example 8000, and you can visit http://localhost:8000 in your browser.
-Alternatively, you can install [http-server](https://www.npmjs.com/package/http-server), which will also create a server in port 8000.
-
-If you work on the code, run `tsc --watch`, which will recompile everytime you change a source file.
+- Install dependencies: `npm install`.
+- Start development (TypeScript watch + Vite static server): `npm run dev`, then open http://localhost:5173.
+- One-off build: `npm run build` (emits `app.js` and `app.js.map` in the project root).
+- Type-check only without the dev server: `npm run typecheck`.
+- Refresh catalog from browser bookmark exports in `data/`: `npm run generate-catalog` (writes `src/editor/catalogData.ts`).

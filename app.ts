@@ -3,7 +3,20 @@
 var editor: Editor;
 var catalog: Catalog;
 
+function applyUiConfig() {
+	const catalogSection = document.getElementById("catalog");
+	if (catalogSection && APP_CONFIG && APP_CONFIG.showCatalog === false) {
+		catalogSection.style.display = "none";
+	}
+
+	const measurementsSection = document.getElementById("measurements");
+	if (measurementsSection && APP_CONFIG && APP_CONFIG.showMeasurements === false) {
+		measurementsSection.style.display = "none";
+	}
+}
+
 window.onload = () => {
+	applyUiConfig();
 	catalog = new Catalog();
 	editor = new Editor();
 };
