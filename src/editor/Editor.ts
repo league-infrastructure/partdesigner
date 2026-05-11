@@ -277,6 +277,20 @@ class Editor {
 	}
 
 	private onKeydown(event: KeyboardEvent) {
+		const target = event.target as HTMLElement | null;
+		if (target) {
+			if (target instanceof HTMLInputElement) {
+				const textTypes = ['text', 'number', 'password', 'email', 'tel', 'url', 'search'];
+				if (textTypes.indexOf(target.type) !== -1) return;
+			} else if (target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) {
+				return;
+			} else if (target.isContentEditable) {
+				return;
+			}
+		}
+
+		const verticalMove = event.shiftKey || event.ctrlKey || event.altKey || event.metaKey;
+
 		const keyActions: { [key: string]: () => void } = {
 			'1': () => this.setType('pinhole'),
 			'2': () => this.setType('axlehole'),
@@ -291,13 +305,14 @@ class Editor {
 			'PageDown': () => this.handles.move(new Vector3(0, -1, 0)),
 			'ArrowLeft': () => this.handles.move(new Vector3(0, 0, 1)),
 			'ArrowRight': () => this.handles.move(new Vector3(0, 0, -1)),
-			'ArrowUp': () => this.handles.move(new Vector3(-1, 0, 0)),
-			'ArrowDown': () => this.handles.move(new Vector3(1, 0, 0)),
+			'ArrowUp': () => this.handles.move(verticalMove ? new Vector3(0, 1, 0) : new Vector3(-1, 0, 0)),
+			'ArrowDown': () => this.handles.move(verticalMove ? new Vector3(0, -1, 0) : new Vector3(1, 0, 0)),
 			'Backspace': () => this.remove(),
 			'Delete': () => this.remove(),
 		};
 
-		if (event.key in keyActions && document.activeElement == this.canvas) {
+		if (event.key in keyActions) {
+			event.preventDefault();
 			keyActions[event.key]();
 		}
 	}
