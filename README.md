@@ -6,6 +6,7 @@ This is a free online CAD tool to create custom LEGO® Technic compatible constr
 
 Features
 - Assemble a custom part from basic blocks: Pin Hole, Axle Hole, Pin, Axle, Solid
+- Import an STL file and convert the model into blocks
 - Save your model as an STL file
 - Catalog of existing LEGO® parts
 - Customize measurements to get a perfect fit

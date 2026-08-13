@@ -21,20 +21,44 @@ class STLExporter {
         this.view.setInt16(offset + 48, 0, true);
     }
 
-    private static fixOpenEdges(triangles: Triangle[]): Triangle[] {
+    /** All distinct vertices of the mesh, in the order in which they first appear. */
+    private static getDistinctPoints(triangles: Triangle[]): Vector3[] {
         var points: Vector3[] = [];
+        let known = new Set<string>();
 
         for (var triangle of triangles) {
-            if (!containsPoint(points, triangle.v1)) {
-                points.push(triangle.v1);
-            }
-            if (!containsPoint(points, triangle.v2)) {
-                points.push(triangle.v2);
-            }
-            if (!containsPoint(points, triangle.v3)) {
-                points.push(triangle.v3);
+            for (var vertex of [triangle.v1, triangle.v2, triangle.v3]) {
+                let key = vertex.x + "," + vertex.y + "," + vertex.z;
+                if (known.has(key)) {
+                    continue;
+                }
+                known.add(key);
+                points.push(vertex);
             }
         }
+
+        return points;
+    }
+
+    /** The average edge length of the mesh, used as the cell size of the point grid. */
+    private static getAverageEdgeLength(triangles: Triangle[]): number {
+        var total = 0;
+        for (var triangle of triangles) {
+            total += triangle.v2.minus(triangle.v1).magnitude();
+        }
+        return total / triangles.length;
+    }
+
+    private static fixOpenEdges(triangles: Triangle[]): Triangle[] {
+        if (triangles.length == 0) {
+            return triangles;
+        }
+
+        let points = STLExporter.getDistinctPoints(triangles);
+        let cellSize = STLExporter.getAverageEdgeLength(triangles);
+        // Only the points near a triangle can lie on one of its edges, so they are looked up per triangle
+        // instead of checking every point of the mesh against every triangle.
+        let pointGrid = cellSize > 0 ? new PointGrid(points, cellSize) : null;
 
         var result: Triangle[] = [];
 
@@ -51,7 +75,17 @@ class STLExporter {
             let edge2LengthSquared = Math.pow(edge2Direction.magnitude(), 2);
             let edge3LengthSquared = Math.pow(edge3Direction.magnitude(), 2);
 
-            for (var point of points) {
+            let candidates = pointGrid == null ? points : pointGrid.getInBox(
+                new Vector3(
+                    Math.min(triangle.v1.x, triangle.v2.x, triangle.v3.x),
+                    Math.min(triangle.v1.y, triangle.v2.y, triangle.v3.y),
+                    Math.min(triangle.v1.z, triangle.v2.z, triangle.v3.z)),
+                new Vector3(
+                    Math.max(triangle.v1.x, triangle.v2.x, triangle.v3.x),
+                    Math.max(triangle.v1.y, triangle.v2.y, triangle.v3.y),
+                    Math.max(triangle.v1.z, triangle.v2.z, triangle.v3.z)));
+
+            for (var point of candidates) {
                 var vertex1Relative = point.minus(triangle.v1);
                 var vertex2Relative = point.minus(triangle.v2);
                 var vertex3Relative = point.minus(triangle.v3);

@@ -33,6 +33,9 @@ class Editor {
 	measurements: Measurements = new Measurements();
 	previousMousePostion: [number, number];
 
+	/** The most recently imported mesh, kept so that the import settings can be changed without reloading the file. */
+	private importedMesh: STLMesh = null;
+
 	constructor() {
 		var url = new URL(document.URL);
 		if (url.searchParams.has("part")) {
@@ -94,6 +97,8 @@ class Editor {
 		document.getElementById("basePinTaper").addEventListener("change", (event: Event) => this.onPrintSettingChange());
 		document.getElementById("printBedYDirection").addEventListener("change", (event: Event) => this.onPrintSettingChange());
 		this.initializePrintSettings();
+
+		this.initializeImportSettings();
 
 		this.initializeEditor("type", (typeName: string) => this.setType(typeName));
 		this.initializeEditor("orientation", (orientationName: string) => this.setOrientation(orientationName));
@@ -346,6 +351,92 @@ class Editor {
 		PRINT_CONFIG.basePinTaper = (document.getElementById("basePinTaper") as HTMLInputElement).checked;
 		PRINT_CONFIG.printBedYDirection = parseInt((document.getElementById("printBedYDirection") as HTMLSelectElement).value) as (-1 | 1);
 		this.updateMesh();
+	}
+
+	private initializeImportSettings() {
+		let fileInput = document.getElementById("importFile") as HTMLInputElement;
+		document.getElementById("import-stl").addEventListener("click", (event: MouseEvent) => fileInput.click());
+		fileInput.addEventListener("change", (event: Event) => this.onImportFileSelected(fileInput));
+
+		for (let elementId of ["importUpAxis", "importRounded"]) {
+			document.getElementById(elementId).addEventListener("change", (event: Event) => this.convertImportedMesh());
+		}
+	}
+
+	private getImportOptions(): VoxelizerOptions {
+		return {
+			// STL files are in millimeters and so is the technic unit, so this converts at original size.
+			cellSize: this.measurements.technicUnit,
+			upAxis: parseInt((document.getElementById("importUpAxis") as HTMLSelectElement).value),
+			rounded: (document.getElementById("importRounded") as HTMLInputElement).checked
+		};
+	}
+
+	private setImportStatus(message: string) {
+		document.getElementById("importStatus").innerText = message;
+	}
+
+	private onImportFileSelected(fileInput: HTMLInputElement) {
+		if (fileInput.files == null || fileInput.files.length == 0) {
+			return;
+		}
+		let file = fileInput.files[0];
+		// Clear the input so that selecting the same file again triggers another change event.
+		fileInput.value = "";
+
+		let reader = new FileReader();
+		reader.onload = () => {
+			try {
+				this.importedMesh = STLLoader.parse(reader.result as ArrayBuffer);
+			} catch (error) {
+				this.importedMesh = null;
+				this.setImportStatus((error as Error).message);
+				return;
+			}
+			this.setName(file.name.replace(/\.stl$/i, ""));
+			this.convertImportedMesh();
+		};
+		reader.onerror = () => this.setImportStatus("The file " + file.name + " could not be read.");
+		this.setImportStatus("Reading " + file.name + "…");
+		reader.readAsArrayBuffer(file);
+	}
+
+	/** Describes what the conversion produced: the size of the part, and how many blocks of each kind. */
+	private getImportSummary(result: VoxelizerResult): string {
+		let size = result.partSize;
+		let unit = this.measurements.technicUnit;
+		var summary = size.x + " × " + size.y + " × " + size.z + " blocks, "
+			+ Math.round(size.x * unit) + " × " + Math.round(size.y * unit) + " × " + Math.round(size.z * unit) + " mm. "
+			+ result.pinHoleCells + " pin holes, " + result.solidCells + " solid.";
+
+		// A model that would have become an unmanageably large part is converted smaller than it is.
+		if (result.scale < 0.995) {
+			summary += " The model was too large to convert at its original size and was scaled to "
+				+ Math.round(result.scale * 100) + "%.";
+		}
+		return summary;
+	}
+
+	private convertImportedMesh() {
+		if (this.importedMesh == null) {
+			return;
+		}
+		let options = this.getImportOptions();
+		this.setImportStatus("Converting…");
+
+		// Converting blocks the main thread, so the status message is given a chance to show up first.
+		window.setTimeout(() => {
+			try {
+				let result = Voxelizer.createPart(this.importedMesh, options);
+				this.part = result.part;
+				this.zoom = Math.max(5, Math.max(result.partSize.x, result.partSize.y, result.partSize.z) * 1.5);
+				this.camera.size = this.zoom;
+				this.updateMesh(true);
+				this.setImportStatus(this.getImportSummary(result));
+			} catch (error) {
+				this.setImportStatus((error as Error).message);
+			}
+		}, 0);
 	}
 
 	public getNameTextbox(): HTMLInputElement {
