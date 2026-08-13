@@ -33,6 +33,30 @@
                 <input type="text" id="partName" placeholder="Unnamed part">
             </div>
         </details>
+        <details id="stlimport" open>
+            <summary>Import STL</summary>
+            <div class="part-buttons">
+                <button id="import-stl">Choose STL file</button>
+            </div>
+            <div class="group">
+                <span class="measurementhint">Up axis in the STL file</span>
+                <select id="importUpAxis">
+                    <option value="2">Z (default)</option>
+                    <option value="1">Y</option>
+                    <option value="0">X</option>
+                </select>
+            </div>
+            <div class="group">
+                <label class="checkboxlabel">
+                    <input type="checkbox" id="importRounded" checked>
+                    Rounded edges
+                </label>
+            </div>
+            <p class="fineprint" id="importStatus">The model is converted at its original size, one block
+                per technic unit. Blocks on the surface get a pin hole pointing along the surface normal,
+                blocks inside the model are solid. Changing a setting converts the same file again.</p>
+            <input type="file" id="importFile" accept=".stl,model/stl" style="display: none">
+        </details>
         <details id="blockeditor" open>
             <summary>Edit Block</summary>
             <div class="group" id="type">

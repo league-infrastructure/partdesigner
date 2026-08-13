@@ -1337,6 +1337,8 @@ class Editor {
         this.mouseMode = MouseMode.None;
         this.style = RenderStyle.Contour;
         this.measurements = new Measurements();
+        /** The most recently imported mesh, kept so that the import settings can be changed without reloading the file. */
+        this.importedMesh = null;
         var url = new URL(document.URL);
         if (url.searchParams.has("part")) {
             this.part = Part.fromString(url.searchParams.get("part"));
@@ -1387,6 +1389,7 @@ class Editor {
         document.getElementById("basePinTaper").addEventListener("change", (event) => this.onPrintSettingChange());
         document.getElementById("printBedYDirection").addEventListener("change", (event) => this.onPrintSettingChange());
         this.initializePrintSettings();
+        this.initializeImportSettings();
         this.initializeEditor("type", (typeName) => this.setType(typeName));
         this.initializeEditor("orientation", (orientationName) => this.setOrientation(orientationName));
         this.initializeEditor("size", (sizeName) => this.setSize(sizeName));
@@ -1611,6 +1614,84 @@ class Editor {
         PRINT_CONFIG.basePinTaper = document.getElementById("basePinTaper").checked;
         PRINT_CONFIG.printBedYDirection = parseInt(document.getElementById("printBedYDirection").value);
         this.updateMesh();
+    }
+    initializeImportSettings() {
+        let fileInput = document.getElementById("importFile");
+        document.getElementById("import-stl").addEventListener("click", (event) => fileInput.click());
+        fileInput.addEventListener("change", (event) => this.onImportFileSelected(fileInput));
+        for (let elementId of ["importUpAxis", "importRounded"]) {
+            document.getElementById(elementId).addEventListener("change", (event) => this.convertImportedMesh());
+        }
+    }
+    getImportOptions() {
+        return {
+            // STL files are in millimeters and so is the technic unit, so this converts at original size.
+            cellSize: this.measurements.technicUnit,
+            upAxis: parseInt(document.getElementById("importUpAxis").value),
+            rounded: document.getElementById("importRounded").checked
+        };
+    }
+    setImportStatus(message) {
+        document.getElementById("importStatus").innerText = message;
+    }
+    onImportFileSelected(fileInput) {
+        if (fileInput.files == null || fileInput.files.length == 0) {
+            return;
+        }
+        let file = fileInput.files[0];
+        // Clear the input so that selecting the same file again triggers another change event.
+        fileInput.value = "";
+        let reader = new FileReader();
+        reader.onload = () => {
+            try {
+                this.importedMesh = STLLoader.parse(reader.result);
+            }
+            catch (error) {
+                this.importedMesh = null;
+                this.setImportStatus(error.message);
+                return;
+            }
+            this.setName(file.name.replace(/\.stl$/i, ""));
+            this.convertImportedMesh();
+        };
+        reader.onerror = () => this.setImportStatus("The file " + file.name + " could not be read.");
+        this.setImportStatus("Reading " + file.name + "…");
+        reader.readAsArrayBuffer(file);
+    }
+    /** Describes what the conversion produced: the size of the part, and how many blocks of each kind. */
+    getImportSummary(result) {
+        let size = result.partSize;
+        let unit = this.measurements.technicUnit;
+        var summary = size.x + " × " + size.y + " × " + size.z + " blocks, "
+            + Math.round(size.x * unit) + " × " + Math.round(size.y * unit) + " × " + Math.round(size.z * unit) + " mm. "
+            + result.pinHoleCells + " pin holes, " + result.solidCells + " solid.";
+        // A model that would have become an unmanageably large part is converted smaller than it is.
+        if (result.scale < 0.995) {
+            summary += " The model was too large to convert at its original size and was scaled to "
+                + Math.round(result.scale * 100) + "%.";
+        }
+        return summary;
+    }
+    convertImportedMesh() {
+        if (this.importedMesh == null) {
+            return;
+        }
+        let options = this.getImportOptions();
+        this.setImportStatus("Converting…");
+        // Converting blocks the main thread, so the status message is given a chance to show up first.
+        window.setTimeout(() => {
+            try {
+                let result = Voxelizer.createPart(this.importedMesh, options);
+                this.part = result.part;
+                this.zoom = Math.max(5, Math.max(result.partSize.x, result.partSize.y, result.partSize.z) * 1.5);
+                this.camera.size = this.zoom;
+                this.updateMesh(true);
+                this.setImportStatus(this.getImportSummary(result));
+            }
+            catch (error) {
+                this.setImportStatus(error.message);
+            }
+        }, 0);
     }
     getNameTextbox() {
         return document.getElementById('partName');
@@ -1968,19 +2049,39 @@ class STLExporter {
         this.writeVector(offset + 36, triangle.v3.times(scalingFactor));
         this.view.setInt16(offset + 48, 0, true);
     }
-    static fixOpenEdges(triangles) {
+    /** All distinct vertices of the mesh, in the order in which they first appear. */
+    static getDistinctPoints(triangles) {
         var points = [];
+        let known = new Set();
         for (var triangle of triangles) {
-            if (!containsPoint(points, triangle.v1)) {
-                points.push(triangle.v1);
-            }
-            if (!containsPoint(points, triangle.v2)) {
-                points.push(triangle.v2);
-            }
-            if (!containsPoint(points, triangle.v3)) {
-                points.push(triangle.v3);
+            for (var vertex of [triangle.v1, triangle.v2, triangle.v3]) {
+                let key = vertex.x + "," + vertex.y + "," + vertex.z;
+                if (known.has(key)) {
+                    continue;
+                }
+                known.add(key);
+                points.push(vertex);
             }
         }
+        return points;
+    }
+    /** The average edge length of the mesh, used as the cell size of the point grid. */
+    static getAverageEdgeLength(triangles) {
+        var total = 0;
+        for (var triangle of triangles) {
+            total += triangle.v2.minus(triangle.v1).magnitude();
+        }
+        return total / triangles.length;
+    }
+    static fixOpenEdges(triangles) {
+        if (triangles.length == 0) {
+            return triangles;
+        }
+        let points = STLExporter.getDistinctPoints(triangles);
+        let cellSize = STLExporter.getAverageEdgeLength(triangles);
+        // Only the points near a triangle can lie on one of its edges, so they are looked up per triangle
+        // instead of checking every point of the mesh against every triangle.
+        let pointGrid = cellSize > 0 ? new PointGrid(points, cellSize) : null;
         var result = [];
         for (var triangle of triangles) {
             var edge1Hits = [0];
@@ -1992,7 +2093,8 @@ class STLExporter {
             let edge1LengthSquared = Math.pow(edge1Direction.magnitude(), 2);
             let edge2LengthSquared = Math.pow(edge2Direction.magnitude(), 2);
             let edge3LengthSquared = Math.pow(edge3Direction.magnitude(), 2);
-            for (var point of points) {
+            let candidates = pointGrid == null ? points : pointGrid.getInBox(new Vector3(Math.min(triangle.v1.x, triangle.v2.x, triangle.v3.x), Math.min(triangle.v1.y, triangle.v2.y, triangle.v3.y), Math.min(triangle.v1.z, triangle.v2.z, triangle.v3.z)), new Vector3(Math.max(triangle.v1.x, triangle.v2.x, triangle.v3.x), Math.max(triangle.v1.y, triangle.v2.y, triangle.v3.y), Math.max(triangle.v1.z, triangle.v2.z, triangle.v3.z)));
+            for (var point of candidates) {
                 var vertex1Relative = point.minus(triangle.v1);
                 var vertex2Relative = point.minus(triangle.v2);
                 var vertex3Relative = point.minus(triangle.v3);
@@ -2382,96 +2484,6 @@ class Mesh {
         return this.triangles.length * 3;
     }
 }
-class Quaternion {
-    constructor(x, y, z, w) {
-        this.x = x;
-        this.y = y;
-        this.z = z;
-        this.w = w;
-    }
-    times(other) {
-        return new Quaternion(this.x * other.x - this.y * other.y - this.z * other.z - this.w * other.w, this.x * other.y + other.x * this.y + this.z * other.w - other.z * this.w, this.x * other.z + other.x * this.z + this.w * other.y - other.w * this.y, this.x * other.w + other.x * this.w + this.y * other.z - other.y * this.z);
-    }
-    toMatrix() {
-        return new Matrix4([
-            1 - 2 * Math.pow(this.z, 2) - 2 * Math.pow(this.w, 2), 2 * this.y * this.z - 2 * this.w * this.x, 2 * this.y * this.w + 2 * this.z * this.x, 0,
-            2 * this.y * this.z + 2 * this.w * this.x, 1 - 2 * Math.pow(this.y, 2) - 2 * Math.pow(this.w, 2), 2 * this.z * this.w - 2 * this.y * this.x, 0,
-            2 * this.y * this.w - 2 * this.z * this.x, 2 * this.z * this.w + 2 * this.y * this.x, 1 - 2 * Math.pow(this.y, 2) - 2 * Math.pow(this.z, 2), 0,
-            0, 0, 0, 1
-        ]);
-    }
-    static euler(angles) {
-        return Quaternion.angleAxis(angles.z, new Vector3(0, 0, 1))
-            .times(Quaternion.angleAxis(angles.y, new Vector3(0, 1, 0)))
-            .times(Quaternion.angleAxis(angles.x, new Vector3(1, 0, 0)));
-    }
-    static angleAxis(angle, axis) {
-        let theta_half = angle * DEG_TO_RAD * 0.5;
-        return new Quaternion(Math.cos(theta_half), axis.x * Math.sin(theta_half), axis.y * Math.sin(theta_half), axis.z * Math.sin(theta_half));
-    }
-    static identity() {
-        return new Quaternion(1, 0, 0, 0);
-    }
-}
-class Ray {
-    constructor(point, direction) {
-        this.point = point;
-        this.direction = direction;
-    }
-    get(t) {
-        return this.point.plus(this.direction.times(t));
-    }
-    getDistanceToRay(other) {
-        var normal = this.direction.cross(other.direction).normalized();
-        var d1 = normal.dot(this.point);
-        var d2 = normal.dot(other.point);
-        return Math.abs(d1 - d2);
-    }
-    getClosestToPoint(point) {
-        return this.direction.dot(this.point.minus(point));
-    }
-    getClosestToRay(other) {
-        var connection = this.direction.cross(other.direction).normalized();
-        var planeNormal = connection.cross(other.direction).normalized();
-        var planeToOrigin = other.point.dot(planeNormal);
-        var result = (-this.point.dot(planeNormal) + planeToOrigin) / this.direction.dot(planeNormal);
-        return result;
-    }
-}
-class Triangle {
-    constructor(v1, v2, v3, flipped = false) {
-        if (flipped) {
-            this.v1 = v2;
-            this.v2 = v1;
-            this.v3 = v3;
-        }
-        else {
-            this.v1 = v1;
-            this.v2 = v2;
-            this.v3 = v3;
-        }
-    }
-    normal() {
-        return this.v3.minus(this.v1).cross(this.v2.minus(this.v1)).normalized();
-    }
-    getOnEdge1(progress) {
-        return Vector3.interpolate(this.v1, this.v2, progress);
-    }
-    getOnEdge2(progress) {
-        return Vector3.interpolate(this.v2, this.v3, progress);
-    }
-    getOnEdge3(progress) {
-        return Vector3.interpolate(this.v3, this.v1, progress);
-    }
-}
-class TriangleWithNormals extends Triangle {
-    constructor(v1, v2, v3, n1, n2, n3) {
-        super(v1, v2, v3);
-        this.n1 = n1;
-        this.n2 = n2;
-        this.n3 = n3;
-    }
-}
 class Vector3 {
     constructor(x, y, z) {
         this.x = x;
@@ -2618,6 +2630,156 @@ const FACE_DIRECTIONS = [
     new Vector3(0, 0, 1),
     new Vector3(0, 0, -1)
 ];
+///<reference path="Vector3.ts" />
+/** If a query covers more cells than this, looking up the cells costs more than checking all points. */
+const POINT_GRID_MAX_CELLS = 512;
+/** Boxes are grown by at least this much, so that points just outside of them are still found. */
+const POINT_GRID_TOLERANCE = 0.002;
+/**
+ * A uniform grid of points that answers "which points are in this box" without checking every point.
+ */
+class PointGrid {
+    constructor(points, cellSize) {
+        this.cells = new Map();
+        this.cellSize = cellSize;
+        this.cellMargin = Math.max(1, Math.ceil(POINT_GRID_TOLERANCE / cellSize));
+        this.points = points;
+        for (let point of points) {
+            let key = this.getKey(this.getIndex(point.x), this.getIndex(point.y), this.getIndex(point.z));
+            let cell = this.cells.get(key);
+            if (cell === undefined) {
+                this.cells.set(key, [point]);
+            }
+            else {
+                cell.push(point);
+            }
+        }
+    }
+    getIndex(coordinate) {
+        return Math.floor(coordinate / this.cellSize);
+    }
+    getKey(x, y, z) {
+        return x + "/" + y + "/" + z;
+    }
+    /**
+     * Returns all points in the given box and some of the points around it. The result is a superset of
+     * what is asked for, callers are expected to check the points they get.
+     */
+    getInBox(minimum, maximum) {
+        let margin = this.cellMargin;
+        let fromX = this.getIndex(minimum.x) - margin, toX = this.getIndex(maximum.x) + margin;
+        let fromY = this.getIndex(minimum.y) - margin, toY = this.getIndex(maximum.y) + margin;
+        let fromZ = this.getIndex(minimum.z) - margin, toZ = this.getIndex(maximum.z) + margin;
+        if ((toX - fromX + 1) * (toY - fromY + 1) * (toZ - fromZ + 1) > POINT_GRID_MAX_CELLS) {
+            return this.points;
+        }
+        var result = [];
+        for (var x = fromX; x <= toX; x++) {
+            for (var y = fromY; y <= toY; y++) {
+                for (var z = fromZ; z <= toZ; z++) {
+                    let cell = this.cells.get(this.getKey(x, y, z));
+                    if (cell === undefined) {
+                        continue;
+                    }
+                    for (let point of cell) {
+                        result.push(point);
+                    }
+                }
+            }
+        }
+        return result;
+    }
+}
+class Quaternion {
+    constructor(x, y, z, w) {
+        this.x = x;
+        this.y = y;
+        this.z = z;
+        this.w = w;
+    }
+    times(other) {
+        return new Quaternion(this.x * other.x - this.y * other.y - this.z * other.z - this.w * other.w, this.x * other.y + other.x * this.y + this.z * other.w - other.z * this.w, this.x * other.z + other.x * this.z + this.w * other.y - other.w * this.y, this.x * other.w + other.x * this.w + this.y * other.z - other.y * this.z);
+    }
+    toMatrix() {
+        return new Matrix4([
+            1 - 2 * Math.pow(this.z, 2) - 2 * Math.pow(this.w, 2), 2 * this.y * this.z - 2 * this.w * this.x, 2 * this.y * this.w + 2 * this.z * this.x, 0,
+            2 * this.y * this.z + 2 * this.w * this.x, 1 - 2 * Math.pow(this.y, 2) - 2 * Math.pow(this.w, 2), 2 * this.z * this.w - 2 * this.y * this.x, 0,
+            2 * this.y * this.w - 2 * this.z * this.x, 2 * this.z * this.w + 2 * this.y * this.x, 1 - 2 * Math.pow(this.y, 2) - 2 * Math.pow(this.z, 2), 0,
+            0, 0, 0, 1
+        ]);
+    }
+    static euler(angles) {
+        return Quaternion.angleAxis(angles.z, new Vector3(0, 0, 1))
+            .times(Quaternion.angleAxis(angles.y, new Vector3(0, 1, 0)))
+            .times(Quaternion.angleAxis(angles.x, new Vector3(1, 0, 0)));
+    }
+    static angleAxis(angle, axis) {
+        let theta_half = angle * DEG_TO_RAD * 0.5;
+        return new Quaternion(Math.cos(theta_half), axis.x * Math.sin(theta_half), axis.y * Math.sin(theta_half), axis.z * Math.sin(theta_half));
+    }
+    static identity() {
+        return new Quaternion(1, 0, 0, 0);
+    }
+}
+class Ray {
+    constructor(point, direction) {
+        this.point = point;
+        this.direction = direction;
+    }
+    get(t) {
+        return this.point.plus(this.direction.times(t));
+    }
+    getDistanceToRay(other) {
+        var normal = this.direction.cross(other.direction).normalized();
+        var d1 = normal.dot(this.point);
+        var d2 = normal.dot(other.point);
+        return Math.abs(d1 - d2);
+    }
+    getClosestToPoint(point) {
+        return this.direction.dot(this.point.minus(point));
+    }
+    getClosestToRay(other) {
+        var connection = this.direction.cross(other.direction).normalized();
+        var planeNormal = connection.cross(other.direction).normalized();
+        var planeToOrigin = other.point.dot(planeNormal);
+        var result = (-this.point.dot(planeNormal) + planeToOrigin) / this.direction.dot(planeNormal);
+        return result;
+    }
+}
+class Triangle {
+    constructor(v1, v2, v3, flipped = false) {
+        if (flipped) {
+            this.v1 = v2;
+            this.v2 = v1;
+            this.v3 = v3;
+        }
+        else {
+            this.v1 = v1;
+            this.v2 = v2;
+            this.v3 = v3;
+        }
+    }
+    normal() {
+        return this.v3.minus(this.v1).cross(this.v2.minus(this.v1)).normalized();
+    }
+    getOnEdge1(progress) {
+        return Vector3.interpolate(this.v1, this.v2, progress);
+    }
+    getOnEdge2(progress) {
+        return Vector3.interpolate(this.v2, this.v3, progress);
+    }
+    getOnEdge3(progress) {
+        return Vector3.interpolate(this.v3, this.v1, progress);
+    }
+}
+class TriangleWithNormals extends Triangle {
+    constructor(v1, v2, v3, n1, n2, n3) {
+        super(v1, v2, v3);
+        this.n1 = n1;
+        this.n2 = n2;
+        this.n3 = n3;
+    }
+}
 class VectorDictionary {
     constructor() {
         this.data = {};
@@ -2681,6 +2843,396 @@ class VectorDictionary {
             }
         }
         return false;
+    }
+}
+class STLLoader {
+    static parse(buffer) {
+        let mesh = STLLoader.isBinary(buffer) ? STLLoader.parseBinary(buffer) : STLLoader.parseAscii(buffer);
+        if (mesh.triangleCount == 0) {
+            throw new Error("This STL file doesn't contain any triangles.");
+        }
+        return mesh;
+    }
+    // Binary STL files have no reliable magic number, but their length is fully determined by the
+    // triangle count in the header. ASCII files won't match that by chance.
+    static isBinary(buffer) {
+        if (buffer.byteLength < 84) {
+            return false;
+        }
+        return 84 + new DataView(buffer).getUint32(80, true) * 50 == buffer.byteLength;
+    }
+    static parseBinary(buffer) {
+        let view = new DataView(buffer);
+        let triangleCount = view.getUint32(80, true);
+        let vertices = new Float32Array(triangleCount * 9);
+        var offset = 84;
+        for (var i = 0; i < triangleCount; i++) {
+            // The face normal stored in the file is skipped, normals are computed from the vertices instead.
+            offset += 12;
+            for (var j = 0; j < 9; j++) {
+                vertices[i * 9 + j] = view.getFloat32(offset, true);
+                offset += 4;
+            }
+            offset += 2;
+        }
+        return { vertices: vertices, triangleCount: triangleCount };
+    }
+    static parseAscii(buffer) {
+        let text = new TextDecoder().decode(buffer);
+        let vertexPattern = /vertex\s+(\S+)\s+(\S+)\s+(\S+)/g;
+        var values = [];
+        var match = vertexPattern.exec(text);
+        while (match != null) {
+            values.push(parseFloat(match[1]), parseFloat(match[2]), parseFloat(match[3]));
+            match = vertexPattern.exec(text);
+        }
+        if (values.length == 0 || values.length % 9 != 0) {
+            throw new Error("This file is not a valid STL file.");
+        }
+        return { vertices: new Float32Array(values), triangleCount: values.length / 9 };
+    }
+}
+/**
+ * The largest model that is converted at its original size. Beyond this the model is scaled down,
+ * because both the mesh generator and the STL exporter get slow with tens of thousands of blocks.
+ */
+const MAX_CELLS_PER_AXIS = 48;
+/**
+ * One empty cell is kept around the model. This is not a design choice that shows up in the part, since
+ * empty cells produce no blocks. It just guarantees that the flood fill that finds the inside of the
+ * model has somewhere to start, even for a model that fills its bounding box completely.
+ */
+const GRID_MARGIN = 1;
+/**
+ * The cells are made a hair larger than needed, so that the model ends up strictly inside them. Without
+ * this, a face of the model that lands exactly on the boundary between two cells counts as touching both
+ * of them and adds a layer of cells that contains nothing. This happens whenever the size of the model
+ * is a whole multiple of the cell size, which is common for models built in CAD.
+ *
+ * The trade-off is that the model is shifted by a fraction of a cell, so a model whose interior faces
+ * also line up with the grid can register a sliver in the cell below an overhang and gain a block there.
+ * Erring this way is deliberate: rejecting slivers instead would delete surfaces that lie on a cell
+ * boundary, and a plate one cell thick consists of nothing else.
+ */
+const CELL_SIZE_SLACK = 1.0001;
+/**
+ * Turns a triangle mesh into a Part by filling every cell of a regular grid that the mesh touches.
+ * Cells on the surface of the model become pin holes oriented along the axis that is closest to the
+ * surface normal, cells that are completely surrounded by other cells become solid blocks.
+ */
+class Voxelizer {
+    static createPart(mesh, options) {
+        let vertices = Voxelizer.toPartCoordinates(mesh, options.upAxis);
+        var minX = Infinity, minY = Infinity, minZ = Infinity;
+        var maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+        for (var i = 0; i < vertices.length; i += 3) {
+            minX = Math.min(minX, vertices[i]);
+            maxX = Math.max(maxX, vertices[i]);
+            minY = Math.min(minY, vertices[i + 1]);
+            maxY = Math.max(maxY, vertices[i + 1]);
+            minZ = Math.min(minZ, vertices[i + 2]);
+            maxZ = Math.max(maxZ, vertices[i + 2]);
+        }
+        let extentX = maxX - minX, extentY = maxY - minY, extentZ = maxZ - minZ;
+        let longestExtent = Math.max(extentX, extentY, extentZ);
+        if (!(longestExtent > 0) || !(options.cellSize > 0)) {
+            throw new Error("The model in this STL file has no size.");
+        }
+        // One cell per technic unit keeps the part the same size as the model. Only a model that would
+        // end up with more cells than we can handle is scaled down, by making its cells larger.
+        let cellSize = Math.max(options.cellSize, longestExtent / MAX_CELLS_PER_AXIS) * CELL_SIZE_SLACK;
+        // Number of cells the model itself occupies, before the margin is added.
+        let modelCellsX = Math.max(1, Math.ceil(extentX / cellSize));
+        let modelCellsY = Math.max(1, Math.ceil(extentY / cellSize));
+        let modelCellsZ = Math.max(1, Math.ceil(extentZ / cellSize));
+        // The model is centered in the grid horizontally, with the same margin on both sides. Vertically
+        // it rests on the bottom of the grid, so the whole margin ends up above the model.
+        let sizeX = modelCellsX + 2 * GRID_MARGIN;
+        let sizeY = modelCellsY + GRID_MARGIN;
+        let sizeZ = modelCellsZ + 2 * GRID_MARGIN;
+        // Position of the corner of cell (0, 0, 0) in the coordinate system of the model.
+        let originX = minX - GRID_MARGIN * cellSize - (modelCellsX * cellSize - extentX) / 2;
+        let originY = minY;
+        let originZ = minZ - GRID_MARGIN * cellSize - (modelCellsZ * cellSize - extentZ) / 2;
+        // From here on, the mesh is in grid coordinates, where one unit is the edge length of a cell and
+        // cell (x, y, z) covers the box from (x, y, z) to (x + 1, y + 1, z + 1).
+        for (var i = 0; i < vertices.length; i += 3) {
+            vertices[i] = (vertices[i] - originX) / cellSize;
+            vertices[i + 1] = (vertices[i + 1] - originY) / cellSize;
+            vertices[i + 2] = (vertices[i + 2] - originZ) / cellSize;
+        }
+        let grid = new VoxelGrid(sizeX, sizeY, sizeZ);
+        grid.addMesh(vertices, mesh.triangleCount);
+        grid.fillInterior();
+        let part = grid.createPart(options.rounded);
+        return {
+            part: part,
+            partSize: new Vector3(modelCellsX, modelCellsY, modelCellsZ),
+            pinHoleCells: grid.pinHoleCellCount,
+            solidCells: grid.solidCellCount,
+            scale: options.cellSize / cellSize
+        };
+    }
+    /**
+     * Copies the mesh into the coordinate system of the editor, where Y points up. The axes are rotated
+     * rather than swapped so that the model doesn't end up mirrored. The default (Z up in the file)
+     * matches the axes used by the STL exporter, so exported parts can be imported again unchanged.
+     */
+    static toPartCoordinates(mesh, upAxis) {
+        let axis = upAxis == 0 || upAxis == 1 ? upAxis : 2;
+        let sourceX = (axis + 2) % 3;
+        let sourceY = axis;
+        let sourceZ = (axis + 1) % 3;
+        let result = new Float32Array(mesh.vertices.length);
+        for (var i = 0; i < result.length; i += 3) {
+            result[i] = mesh.vertices[i + sourceX];
+            result[i + 1] = mesh.vertices[i + sourceY];
+            result[i + 2] = mesh.vertices[i + sourceZ];
+        }
+        return result;
+    }
+}
+class VoxelGrid {
+    constructor(sizeX, sizeY, sizeZ) {
+        /** Set by createPart(): how many cells ended up with a pin hole and how many with a solid block. */
+        this.pinHoleCellCount = 0;
+        this.solidCellCount = 0;
+        this.sizeX = sizeX;
+        this.sizeY = sizeY;
+        this.sizeZ = sizeZ;
+        let cellCount = sizeX * sizeY * sizeZ;
+        this.surface = new Uint8Array(cellCount);
+        this.filled = new Uint8Array(cellCount);
+        this.normalWeights = new Float32Array(cellCount * 3);
+    }
+    index(x, y, z) {
+        return (x * this.sizeY + y) * this.sizeZ + z;
+    }
+    isFilled(x, y, z) {
+        if (x < 0 || y < 0 || z < 0 || x >= this.sizeX || y >= this.sizeY || z >= this.sizeZ) {
+            return false;
+        }
+        return this.filled[this.index(x, y, z)] != 0;
+    }
+    /** Marks every cell that is touched by a triangle and accumulates the surface normals of those cells. */
+    addMesh(vertices, triangleCount) {
+        // The cells of the triangle that is currently being added, reused to avoid allocating per triangle.
+        var touched = [];
+        for (var triangle = 0; triangle < triangleCount; triangle++) {
+            let i = triangle * 9;
+            let ax = vertices[i], ay = vertices[i + 1], az = vertices[i + 2];
+            let bx = vertices[i + 3], by = vertices[i + 4], bz = vertices[i + 5];
+            let cx = vertices[i + 6], cy = vertices[i + 7], cz = vertices[i + 8];
+            let ux = bx - ax, uy = by - ay, uz = bz - az;
+            let vx = cx - ax, vy = cy - ay, vz = cz - az;
+            let normalX = uy * vz - uz * vy;
+            let normalY = uz * vx - ux * vz;
+            let normalZ = ux * vy - uy * vx;
+            let doubleArea = Math.sqrt(normalX * normalX + normalY * normalY + normalZ * normalZ);
+            if (doubleArea == 0) {
+                continue;
+            }
+            // Up to a constant factor, this is area * squaredNormalComponent.
+            let totalWeightX = normalX * normalX / doubleArea;
+            let totalWeightY = normalY * normalY / doubleArea;
+            let totalWeightZ = normalZ * normalZ / doubleArea;
+            let fromX = clamp(0, this.sizeX - 1, Math.floor(Math.min(ax, bx, cx)));
+            let toX = clamp(0, this.sizeX - 1, Math.floor(Math.max(ax, bx, cx)));
+            let fromY = clamp(0, this.sizeY - 1, Math.floor(Math.min(ay, by, cy)));
+            let toY = clamp(0, this.sizeY - 1, Math.floor(Math.max(ay, by, cy)));
+            let fromZ = clamp(0, this.sizeZ - 1, Math.floor(Math.min(az, bz, cz)));
+            let toZ = clamp(0, this.sizeZ - 1, Math.floor(Math.max(az, bz, cz)));
+            touched.length = 0;
+            for (var x = fromX; x <= toX; x++) {
+                for (var y = fromY; y <= toY; y++) {
+                    for (var z = fromZ; z <= toZ; z++) {
+                        if (!triangleIntersectsCell(x + 0.5, y + 0.5, z + 0.5, ax, ay, az, bx, by, bz, cx, cy, cz)) {
+                            continue;
+                        }
+                        let index = this.index(x, y, z);
+                        this.surface[index] = 1;
+                        touched.push(index);
+                    }
+                }
+            }
+            // The weight of the triangle is split evenly between the cells it covers. Without this, one
+            // large triangle would outweigh many small ones in a cell that they share, even if the large
+            // triangle barely reaches into it.
+            let share = 1 / touched.length;
+            for (let index of touched) {
+                this.normalWeights[index * 3] += totalWeightX * share;
+                this.normalWeights[index * 3 + 1] += totalWeightY * share;
+                this.normalWeights[index * 3 + 2] += totalWeightZ * share;
+            }
+        }
+    }
+    /**
+     * Flood fills the empty space that is connected to the border of the grid. Every cell that is neither
+     * part of the surface nor reachable from the outside lies inside the model. If the mesh isn't closed,
+     * the fill leaks into the model and only the surface cells remain.
+     */
+    fillInterior() {
+        let outside = new Uint8Array(this.surface.length);
+        var stack = [];
+        let visit = (x, y, z) => {
+            if (x < 0 || y < 0 || z < 0 || x >= this.sizeX || y >= this.sizeY || z >= this.sizeZ) {
+                return;
+            }
+            let index = this.index(x, y, z);
+            if (this.surface[index] != 0 || outside[index] != 0) {
+                return;
+            }
+            outside[index] = 1;
+            stack.push(index);
+        };
+        for (var x = 0; x < this.sizeX; x++) {
+            for (var y = 0; y < this.sizeY; y++) {
+                visit(x, y, 0);
+                visit(x, y, this.sizeZ - 1);
+            }
+            for (var z = 0; z < this.sizeZ; z++) {
+                visit(x, 0, z);
+                visit(x, this.sizeY - 1, z);
+            }
+        }
+        for (var y = 0; y < this.sizeY; y++) {
+            for (var z = 0; z < this.sizeZ; z++) {
+                visit(0, y, z);
+                visit(this.sizeX - 1, y, z);
+            }
+        }
+        while (stack.length != 0) {
+            let current = stack.pop();
+            let currentZ = current % this.sizeZ;
+            let currentY = Math.floor(current / this.sizeZ) % this.sizeY;
+            let currentX = Math.floor(current / (this.sizeZ * this.sizeY));
+            visit(currentX - 1, currentY, currentZ);
+            visit(currentX + 1, currentY, currentZ);
+            visit(currentX, currentY - 1, currentZ);
+            visit(currentX, currentY + 1, currentZ);
+            visit(currentX, currentY, currentZ - 1);
+            visit(currentX, currentY, currentZ + 1);
+        }
+        for (var index = 0; index < this.filled.length; index++) {
+            if (this.surface[index] != 0 || outside[index] == 0) {
+                this.filled[index] = 1;
+            }
+        }
+    }
+    createPart(rounded) {
+        let part = new Part();
+        this.pinHoleCellCount = 0;
+        this.solidCellCount = 0;
+        for (var x = 0; x < this.sizeX; x++) {
+            for (var y = 0; y < this.sizeY; y++) {
+                for (var z = 0; z < this.sizeZ; z++) {
+                    if (!this.isFilled(x, y, z)) {
+                        continue;
+                    }
+                    let orientation = this.getOrientation(x, y, z);
+                    let enclosed = this.isEnclosed(x, y, z);
+                    let type = enclosed ? BlockType.Solid : BlockType.PinHole;
+                    if (enclosed) {
+                        this.solidCellCount++;
+                    }
+                    else {
+                        this.pinHoleCellCount++;
+                    }
+                    // One cell is a full size block, which consists of two blocks in the part, one at the
+                    // position and one in front of it. Cell (x, y, z) covers the block positions
+                    // 2x, 2x+1 and so on, so neighboring cells never overlap.
+                    let position = new Vector3(x * 2, y * 2, z * 2);
+                    part.blocks.set(position, new Block(orientation, type, rounded));
+                    part.blocks.set(position.plus(FORWARD[orientation]), new Block(orientation, type, rounded));
+                }
+            }
+        }
+        return part;
+    }
+    /** True if all six neighbors of the cell are filled, meaning the cell is not visible from the outside. */
+    isEnclosed(x, y, z) {
+        return this.isFilled(x - 1, y, z) && this.isFilled(x + 1, y, z)
+            && this.isFilled(x, y - 1, z) && this.isFilled(x, y + 1, z)
+            && this.isFilled(x, y, z - 1) && this.isFilled(x, y, z + 1);
+    }
+    /** Picks the axis that is closest to the surface normal of the model in this cell. */
+    getOrientation(x, y, z) {
+        let index = this.index(x, y, z) * 3;
+        var weightX = this.normalWeights[index];
+        var weightY = this.normalWeights[index + 1];
+        var weightZ = this.normalWeights[index + 2];
+        if (weightX == 0 && weightY == 0 && weightZ == 0) {
+            // No triangle passes through this cell, so the shape of the surrounding cells is used instead.
+            // The surface points towards the empty neighbors.
+            weightX = (this.isFilled(x - 1, y, z) ? 0 : 1) + (this.isFilled(x + 1, y, z) ? 0 : 1);
+            weightY = (this.isFilled(x, y - 1, z) ? 0 : 1) + (this.isFilled(x, y + 1, z) ? 0 : 1);
+            weightZ = (this.isFilled(x, y, z - 1) ? 0 : 1) + (this.isFilled(x, y, z + 1) ? 0 : 1);
+        }
+        if (weightX >= weightY && weightX >= weightZ) {
+            return Orientation.X;
+        }
+        else if (weightY >= weightZ) {
+            return Orientation.Y;
+        }
+        else {
+            return Orientation.Z;
+        }
+    }
+}
+/**
+ * Tests a triangle against an axis aligned cube with an edge length of 1, using the separating axis
+ * theorem as described by Akenine-Möller, "Fast 3D Triangle-Box Overlap Testing".
+ */
+function triangleIntersectsCell(centerX, centerY, centerZ, ax, ay, az, bx, by, bz, cx, cy, cz) {
+    const radius = 0.5;
+    let v0x = ax - centerX, v0y = ay - centerY, v0z = az - centerZ;
+    let v1x = bx - centerX, v1y = by - centerY, v1z = bz - centerZ;
+    let v2x = cx - centerX, v2y = cy - centerY, v2z = cz - centerZ;
+    // The three face normals of the cube.
+    if (isSeparated(Math.min(v0x, v1x, v2x), Math.max(v0x, v1x, v2x), radius))
+        return false;
+    if (isSeparated(Math.min(v0y, v1y, v2y), Math.max(v0y, v1y, v2y), radius))
+        return false;
+    if (isSeparated(Math.min(v0z, v1z, v2z), Math.max(v0z, v1z, v2z), radius))
+        return false;
+    let e0x = v1x - v0x, e0y = v1y - v0y, e0z = v1z - v0z;
+    let e1x = v2x - v1x, e1y = v2y - v1y, e1z = v2z - v1z;
+    let e2x = v0x - v2x, e2y = v0y - v2y, e2z = v0z - v2z;
+    // The normal of the triangle.
+    let normalX = e0y * e1z - e0z * e1y;
+    let normalY = e0z * e1x - e0x * e1z;
+    let normalZ = e0x * e1y - e0y * e1x;
+    let distance = normalX * v0x + normalY * v0y + normalZ * v0z;
+    if (Math.abs(distance) > radius * (Math.abs(normalX) + Math.abs(normalY) + Math.abs(normalZ)))
+        return false;
+    // The nine cross products of a triangle edge and a cube edge.
+    if (isSeparated(e0z * v0y - e0y * v0z, e0z * v2y - e0y * v2z, radius * (Math.abs(e0z) + Math.abs(e0y))))
+        return false;
+    if (isSeparated(e0x * v0z - e0z * v0x, e0x * v2z - e0z * v2x, radius * (Math.abs(e0z) + Math.abs(e0x))))
+        return false;
+    if (isSeparated(e0y * v1x - e0x * v1y, e0y * v2x - e0x * v2y, radius * (Math.abs(e0y) + Math.abs(e0x))))
+        return false;
+    if (isSeparated(e1z * v0y - e1y * v0z, e1z * v2y - e1y * v2z, radius * (Math.abs(e1z) + Math.abs(e1y))))
+        return false;
+    if (isSeparated(e1x * v0z - e1z * v0x, e1x * v2z - e1z * v2x, radius * (Math.abs(e1z) + Math.abs(e1x))))
+        return false;
+    if (isSeparated(e1y * v0x - e1x * v0y, e1y * v1x - e1x * v1y, radius * (Math.abs(e1y) + Math.abs(e1x))))
+        return false;
+    if (isSeparated(e2z * v0y - e2y * v0z, e2z * v1y - e2y * v1z, radius * (Math.abs(e2z) + Math.abs(e2y))))
+        return false;
+    if (isSeparated(e2x * v0z - e2z * v0x, e2x * v1z - e2z * v1x, radius * (Math.abs(e2z) + Math.abs(e2x))))
+        return false;
+    if (isSeparated(e2y * v1x - e2x * v1y, e2y * v2x - e2x * v2y, radius * (Math.abs(e2y) + Math.abs(e2x))))
+        return false;
+    return true;
+}
+/** True if the interval spanned by the two projected points lies completely outside [-radius, radius]. */
+function isSeparated(a, b, radius) {
+    if (a < b) {
+        return a > radius || b < -radius;
+    }
+    else {
+        return b > radius || a < -radius;
     }
 }
 class Block {
