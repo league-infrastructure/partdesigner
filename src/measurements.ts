@@ -17,7 +17,7 @@ class Measurements {
 	interiorEndMargin = 0.2 / this.technicUnit;
 
 	/** Height of the conical taper for base pin holes (for 3D printing optimization) */
-	basePinTaperHeight = 0.5 / this.technicUnit;
+	basePinTaperHeight = 1.0 / this.technicUnit;
 
 	lipSubdivisions = 6;
 
