@@ -1182,7 +1182,7 @@ class Measurements {
         this.attachmentAdapterRadius = 3 / this.technicUnit;
         this.interiorEndMargin = 0.2 / this.technicUnit;
         /** Height of the conical taper for base pin holes (for 3D printing optimization) */
-        this.basePinTaperHeight = 0.5 / this.technicUnit;
+        this.basePinTaperHeight = 1.0 / this.technicUnit;
         this.lipSubdivisions = 6;
         this.subdivisionsPerQuarter = 8;
     }
