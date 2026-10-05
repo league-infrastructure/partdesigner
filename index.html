@@ -33,30 +33,6 @@
                 <input type="text" id="partName" placeholder="Unnamed part">
             </div>
         </details>
-        <details id="stlimport" open>
-            <summary>Import STL</summary>
-            <div class="part-buttons">
-                <button id="import-stl">Choose STL file</button>
-            </div>
-            <div class="group">
-                <span class="measurementhint">Up axis in the STL file</span>
-                <select id="importUpAxis">
-                    <option value="2">Z (default)</option>
-                    <option value="1">Y</option>
-                    <option value="0">X</option>
-                </select>
-            </div>
-            <div class="group">
-                <label class="checkboxlabel">
-                    <input type="checkbox" id="importRounded" checked>
-                    Rounded edges
-                </label>
-            </div>
-            <p class="fineprint" id="importStatus">The model is converted at its original size, one block
-                per technic unit. Blocks on the surface get a pin hole pointing along the surface normal,
-                blocks inside the model are solid. Changing a setting converts the same file again.</p>
-            <input type="file" id="importFile" accept=".stl,model/stl" style="display: none">
-        </details>
         <details id="blockeditor" open>
             <summary>Edit Block</summary>
             <div class="group" id="type">
@@ -114,22 +90,54 @@
         <details id="catalog">
             <summary>Catalog</summary>
         </details>
-        <details id="printsettings" open>
+        <details id="printsettings">
             <summary>Print Settings</summary>
             <div class="group">
                 <label class="checkboxlabel">
                     <input type="checkbox" id="basePinTaper" checked>
                     Base Pin Taper
                 </label>
-                <span class="measurementhint">Removes overhangs from bottom of vertical pinholes for better FDM printing.</span>
+                <span class="measurementhint">Removes overhangs from the bottom of pinholes that face the print bed for better FDM printing.</span>
+            </div>
+            <div class="group">
+                <span class="measurementhint">Taper Angle (degrees from the pin hole axis)</span>
+                <input type="number" id="basePinTaperAngle" min="5" max="85" step="0.1">
             </div>
             <div class="group">
                 <span class="measurementhint">Print Bed Direction</span>
-                <select id="printBedYDirection">
-                    <option value="-1">-Y (default)</option>
-                    <option value="1">+Y</option>
+                <select id="printBedDirection">
+                    <option value="1:-1">-Y (default)</option>
+                    <option value="1:1">+Y</option>
+                    <option value="2:-1">-Z</option>
+                    <option value="2:1">+Z</option>
+                    <option value="0:-1">-X</option>
+                    <option value="0:1">+X</option>
                 </select>
             </div>
+        </details>
+        <details id="stlimport">
+            <summary>Import STL</summary>
+            <div class="part-buttons">
+                <button id="import-stl">Choose STL file</button>
+            </div>
+            <div class="group">
+                <span class="measurementhint">Up axis in the STL file</span>
+                <select id="importUpAxis">
+                    <option value="2">Z (default)</option>
+                    <option value="1">Y</option>
+                    <option value="0">X</option>
+                </select>
+            </div>
+            <div class="group">
+                <label class="checkboxlabel">
+                    <input type="checkbox" id="importRounded" checked>
+                    Rounded edges
+                </label>
+            </div>
+            <p class="fineprint" id="importStatus">The model is converted at its original size, one block
+                per technic unit. Blocks on the surface get a pin hole pointing along the surface normal,
+                blocks inside the model are solid. Changing a setting converts the same file again.</p>
+            <input type="file" id="importFile" accept=".stl,model/stl" style="display: none">
         </details>
         <details id="measurements">
             <summary>Measurements</summary>

@@ -844,23 +844,24 @@ class PartMeshGenerator extends MeshGenerator {
         var startMargin = showInteriorStartCap ? this.measurements.interiorEndMargin : 0;
         var interiorRadius = this.measurements.interiorRadius;
         // Check if we should apply base pin taper for 3D printing optimization
-        // This applies to Y-oriented pinholes at the bottom (toward the print bed)
-        // For Y orientation, forward is (0,1,0), so "start" is negative Y and "end" is positive Y
-        // If printBedYDirection is -1, the bottom is at "start"; if 1, the bottom is at "end"
+        // This applies to pinholes along the print bed axis at the bottom (toward the print bed)
+        // Forward always points in the positive direction, so "start" is the negative side and "end" the positive side
+        // If printBedDirection is -1, the bottom is at "start"; if 1, the bottom is at "end"
         var applyStartTaper = PRINT_CONFIG.basePinTaper
-            && block.orientation == Orientation.Y
+            && block.orientation == PRINT_CONFIG.printBedAxis
             && hasOpenStart
             && !showInteriorStartCap
-            && PRINT_CONFIG.printBedYDirection == -1; // Start is at negative Y (bottom when -1)
+            && PRINT_CONFIG.printBedDirection == -1;
         var applyEndTaper = PRINT_CONFIG.basePinTaper
-            && block.orientation == Orientation.Y
+            && block.orientation == PRINT_CONFIG.printBedAxis
             && hasOpenEnd
             && !showInteriorEndCap
-            && PRINT_CONFIG.printBedYDirection == 1; // End is at positive Y (bottom when 1)
-        var taperHeight = this.measurements.basePinTaperHeight;
+            && PRINT_CONFIG.printBedDirection == 1;
         // Calculate offsets - taper adds to the offset, it doesn't replace the lip
         var offsetStart = (hasOpenStart || showInteriorStartCap ? offset : 0) + startMargin;
         var offsetEnd = (hasOpenEnd || showInteriorEndCap ? offset : 0) + endMargin;
+        // The taper height follows from the configured angle, limited to the length of the hole
+        var taperHeight = Math.min((interiorRadius - this.measurements.pinHoleRadius) / Math.tan(PRINT_CONFIG.basePinTaperAngle * DEG_TO_RAD), Math.max(0, distance - offsetStart - offsetEnd));
         // Add taper height to offsets when applying taper (taper extends INTO the main cylinder area)
         var mainCylinderStart = offsetStart + (applyStartTaper ? taperHeight : 0);
         var mainCylinderEnd = offsetEnd + (applyEndTaper ? taperHeight : 0);
@@ -1085,7 +1086,11 @@ const APP_CONFIG = {
 };
 const PRINT_CONFIG = {
     basePinTaper: true,
-    printBedYDirection: -1
+    // Matches a taper that is 1.0 mm high between the default interior radius (3.2 mm)
+    // and pin hole radius (2.475 mm), about 35.9 degrees.
+    basePinTaperAngle: Math.atan2(3.2 - 2.475, 1.0) * 180 / Math.PI,
+    printBedAxis: 1, // Orientation.Y
+    printBedDirection: -1
 };
 function triangularNumber(n) {
     return n * (n + 1) / 2;
@@ -1181,8 +1186,6 @@ class Measurements {
         this.attachmentAdapterSize = 0.4 / this.technicUnit;
         this.attachmentAdapterRadius = 3 / this.technicUnit;
         this.interiorEndMargin = 0.2 / this.technicUnit;
-        /** Height of the conical taper for base pin holes (for 3D printing optimization) */
-        this.basePinTaperHeight = 1.0 / this.technicUnit;
         this.lipSubdivisions = 6;
         this.subdivisionsPerQuarter = 8;
     }
@@ -1387,7 +1390,8 @@ class Editor {
         document.getElementById("resetmeasurements").addEventListener("click", (event) => this.resetMeasurements());
         // Print settings event handlers
         document.getElementById("basePinTaper").addEventListener("change", (event) => this.onPrintSettingChange());
-        document.getElementById("printBedYDirection").addEventListener("change", (event) => this.onPrintSettingChange());
+        document.getElementById("basePinTaperAngle").addEventListener("change", (event) => this.onTaperAngleChange());
+        document.getElementById("printBedDirection").addEventListener("change", (event) => this.onPrintSettingChange());
         this.initializePrintSettings();
         this.initializeImportSettings();
         this.initializeEditor("type", (typeName) => this.setType(typeName));
@@ -1608,11 +1612,27 @@ class Editor {
     }
     initializePrintSettings() {
         document.getElementById("basePinTaper").checked = PRINT_CONFIG.basePinTaper;
-        document.getElementById("printBedYDirection").value = PRINT_CONFIG.printBedYDirection.toString();
+        this.displayTaperAngle();
+        document.getElementById("printBedDirection").value = PRINT_CONFIG.printBedAxis + ":" + PRINT_CONFIG.printBedDirection;
+    }
+    displayTaperAngle() {
+        document.getElementById("basePinTaperAngle").value = (Math.round(PRINT_CONFIG.basePinTaperAngle * 10) / 10).toString();
     }
     onPrintSettingChange() {
         PRINT_CONFIG.basePinTaper = document.getElementById("basePinTaper").checked;
-        PRINT_CONFIG.printBedYDirection = parseInt(document.getElementById("printBedYDirection").value);
+        let bedDirection = document.getElementById("printBedDirection").value.split(":");
+        PRINT_CONFIG.printBedAxis = parseInt(bedDirection[0]);
+        PRINT_CONFIG.printBedDirection = parseInt(bedDirection[1]);
+        this.updateMesh();
+    }
+    onTaperAngleChange() {
+        // Read separately from the other settings so that the rounded display value
+        // does not replace the exact default angle.
+        let angle = parseFloat(document.getElementById("basePinTaperAngle").value);
+        if (!isNaN(angle)) {
+            PRINT_CONFIG.basePinTaperAngle = Math.min(85, Math.max(5, angle));
+        }
+        this.displayTaperAngle();
         this.updateMesh();
     }
     initializeImportSettings() {
