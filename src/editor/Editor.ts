@@ -95,7 +95,8 @@ class Editor {
 
 		// Print settings event handlers
 		document.getElementById("basePinTaper").addEventListener("change", (event: Event) => this.onPrintSettingChange());
-		document.getElementById("printBedYDirection").addEventListener("change", (event: Event) => this.onPrintSettingChange());
+		document.getElementById("basePinTaperAngle").addEventListener("change", (event: Event) => this.onTaperAngleChange());
+		document.getElementById("printBedDirection").addEventListener("change", (event: Event) => this.onPrintSettingChange());
 		this.initializePrintSettings();
 
 		this.initializeImportSettings();
@@ -344,12 +345,30 @@ class Editor {
 
 	private initializePrintSettings() {
 		(document.getElementById("basePinTaper") as HTMLInputElement).checked = PRINT_CONFIG.basePinTaper;
-		(document.getElementById("printBedYDirection") as HTMLSelectElement).value = PRINT_CONFIG.printBedYDirection.toString();
+		this.displayTaperAngle();
+		(document.getElementById("printBedDirection") as HTMLSelectElement).value = PRINT_CONFIG.printBedAxis + ":" + PRINT_CONFIG.printBedDirection;
+	}
+
+	private displayTaperAngle() {
+		(document.getElementById("basePinTaperAngle") as HTMLInputElement).value = (Math.round(PRINT_CONFIG.basePinTaperAngle * 10) / 10).toString();
 	}
 
 	private onPrintSettingChange() {
 		PRINT_CONFIG.basePinTaper = (document.getElementById("basePinTaper") as HTMLInputElement).checked;
-		PRINT_CONFIG.printBedYDirection = parseInt((document.getElementById("printBedYDirection") as HTMLSelectElement).value) as (-1 | 1);
+		let bedDirection = (document.getElementById("printBedDirection") as HTMLSelectElement).value.split(":");
+		PRINT_CONFIG.printBedAxis = parseInt(bedDirection[0]) as Orientation;
+		PRINT_CONFIG.printBedDirection = parseInt(bedDirection[1]) as (-1 | 1);
+		this.updateMesh();
+	}
+
+	private onTaperAngleChange() {
+		// Read separately from the other settings so that the rounded display value
+		// does not replace the exact default angle.
+		let angle = parseFloat((document.getElementById("basePinTaperAngle") as HTMLInputElement).value);
+		if (!isNaN(angle)) {
+			PRINT_CONFIG.basePinTaperAngle = Math.min(85, Math.max(5, angle));
+		}
+		this.displayTaperAngle();
 		this.updateMesh();
 	}
 

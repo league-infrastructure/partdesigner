@@ -904,26 +904,29 @@ class PartMeshGenerator extends MeshGenerator {
 		var interiorRadius = this.measurements.interiorRadius;
 
 		// Check if we should apply base pin taper for 3D printing optimization
-		// This applies to Y-oriented pinholes at the bottom (toward the print bed)
-		// For Y orientation, forward is (0,1,0), so "start" is negative Y and "end" is positive Y
-		// If printBedYDirection is -1, the bottom is at "start"; if 1, the bottom is at "end"
+		// This applies to pinholes along the print bed axis at the bottom (toward the print bed)
+		// Forward always points in the positive direction, so "start" is the negative side and "end" the positive side
+		// If printBedDirection is -1, the bottom is at "start"; if 1, the bottom is at "end"
 		var applyStartTaper = PRINT_CONFIG.basePinTaper 
-			&& block.orientation == Orientation.Y 
+			&& block.orientation == PRINT_CONFIG.printBedAxis 
 			&& hasOpenStart 
 			&& !showInteriorStartCap
-			&& PRINT_CONFIG.printBedYDirection == -1;  // Start is at negative Y (bottom when -1)
+			&& PRINT_CONFIG.printBedDirection == -1;
 		var applyEndTaper = PRINT_CONFIG.basePinTaper 
-			&& block.orientation == Orientation.Y 
+			&& block.orientation == PRINT_CONFIG.printBedAxis 
 			&& hasOpenEnd 
 			&& !showInteriorEndCap
-			&& PRINT_CONFIG.printBedYDirection == 1;   // End is at positive Y (bottom when 1)
-		
-		var taperHeight = this.measurements.basePinTaperHeight;
+			&& PRINT_CONFIG.printBedDirection == 1;
 
 		// Calculate offsets - taper adds to the offset, it doesn't replace the lip
         var offsetStart = (hasOpenStart || showInteriorStartCap ? offset : 0) + startMargin;
 		var offsetEnd = (hasOpenEnd || showInteriorEndCap ? offset : 0) + endMargin;
 		
+		// The taper height follows from the configured angle, limited to the length of the hole
+		var taperHeight = Math.min(
+			(interiorRadius - this.measurements.pinHoleRadius) / Math.tan(PRINT_CONFIG.basePinTaperAngle * DEG_TO_RAD),
+			Math.max(0, distance - offsetStart - offsetEnd));
+
 		// Add taper height to offsets when applying taper (taper extends INTO the main cylinder area)
 		var mainCylinderStart = offsetStart + (applyStartTaper ? taperHeight : 0);
 		var mainCylinderEnd = offsetEnd + (applyEndTaper ? taperHeight : 0);
